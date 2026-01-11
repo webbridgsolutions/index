@@ -3,27 +3,29 @@ const cors = require('cors');
 const fetch = require('node-fetch');
 const app = express();
 
-app.use(cors()); // Permite que InfinityFree haga peticiones aquí
+app.use(cors());
 app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
 
 app.post('/', async (req, res) => {
-    // Detectamos si viene como FormData (de tu script actual) o JSON
-    const message = req.body.message;
-    const historyRaw = req.body.history || '[]';
-    
-    let history = [];
-    try {
-        history = typeof historyRaw === 'string' ? JSON.parse(historyRaw) : historyRaw;
-    } catch (e) { history = []; }
-
+    const { message, history } = req.body;
     const apiKey = process.env.ANTHROPIC_API_KEY;
 
-    if (!message) {
-        return res.status(400).json({ success: false, message: "No message provided" });
+    if (!apiKey) {
+        return res.status(500).json({ success: false, message: "Falta la API Key en el servidor" });
     }
 
     try {
+        // Formatear el historial correctamente para Anthropic
+        const formattedMessages = (history || [])
+            .filter(msg => msg.role === 'user' || msg.role === 'assistant')
+            .map(msg => ({
+                role: msg.role,
+                content: msg.content
+            }));
+
+        // Agregar el mensaje actual del usuario
+        formattedMessages.push({ role: 'user', content: message });
+
         const response = await fetch('https://api.anthropic.com/v1/messages', {
             method: 'POST',
             headers: {
@@ -34,24 +36,24 @@ app.post('/', async (req, res) => {
             body: JSON.stringify({
                 model: "claude-3-5-sonnet-20240620",
                 max_tokens: 1024,
-                system: "Eres un asistente de IA para WebBridge Solutions, empresa de desarrollo web en Puebla.",
-                messages: history.concat([{ role: 'user', content: message }])
+                system: "Eres un asistente de IA para WebBridge Solutions en Puebla, México.",
+                messages: formattedMessages
             })
         });
 
         const data = await response.json();
-        
-        if (data.content && data.content[0]) {
+
+        if (response.ok && data.content) {
             res.json({ success: true, message: data.content[0].text });
         } else {
-            console.error("Error de Anthropic:", data);
-            res.status(500).json({ success: false, message: "Error en la respuesta de la IA" });
+            console.error("Error de Anthropic API:", data);
+            res.status(response.status).json({ success: false, message: data.error?.message || "Error en la IA" });
         }
     } catch (error) {
-        console.error("Error de servidor:", error);
+        console.error("Error en el servidor de Render:", error);
         res.status(500).json({ success: false, message: error.message });
     }
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Servidor WebBridge corriendo en puerto ${PORT}`));
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => console.log(`Servidor listo en puerto ${PORT}`));
