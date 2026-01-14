@@ -5,55 +5,42 @@ const app = express();
 
 app.use(cors());
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 app.post('/', async (req, res) => {
     const { message, history } = req.body;
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-
-    if (!apiKey) {
-        return res.status(500).json({ success: false, message: "Falta la API Key en el servidor" });
-    }
+    // Ahora usaremos la KEY de Groq
+    const apiKey = process.env.GROQ_API_KEY; 
 
     try {
-        // Formatear el historial correctamente para Anthropic
-        const formattedMessages = (history || [])
-            .filter(msg => msg.role === 'user' || msg.role === 'assistant')
-            .map(msg => ({
-                role: msg.role,
-                content: msg.content
-            }));
+        let parsedHistory = typeof history === 'string' ? JSON.parse(history) : (history || []);
 
-        // Agregar el mensaje actual del usuario
-        formattedMessages.push({ role: 'user', content: message });
-
-        const response = await fetch('https://api.anthropic.com/v1/messages', {
+        const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
             method: 'POST',
             headers: {
-                'Content-Type': 'application/json',
-                'x-api-key': apiKey,
-                'anthropic-version': '2023-06-01'
+                'Authorization': `Bearer ${apiKey}`,
+                'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-                model: "claude-sonnet-4-20250514",
-                max_tokens: 1024,
-                system: "Eres un asistente de IA para WebBridge Solutions en Puebla, México.",
-                messages: formattedMessages
+                // Modelo recomendado por su velocidad y capacidad
+                model: "llama-3.3-70b-versatile", 
+                messages: [
+                    { role: "system", content: "Eres el asistente de WebBridge Solutions." },
+                    ...parsedHistory,
+                    { role: "user", content: message }
+                ],
+                // Desactivamos stream para que InfinityFree no dé error 403/500
+                stream: false 
             })
         });
 
         const data = await response.json();
+        res.json({ success: true, message: data.choices[0].message.content });
 
-        if (response.ok && data.content) {
-            res.json({ success: true, message: data.content[0].text });
-        } else {
-            console.error("Error de Anthropic API:", data);
-            res.status(response.status).json({ success: false, message: data.error?.message || "Error en la IA" });
-        }
     } catch (error) {
-        console.error("Error en el servidor de Render:", error);
         res.status(500).json({ success: false, message: error.message });
     }
 });
 
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`Servidor listo en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`Servidor Groq listo en puerto ${PORT}`));
