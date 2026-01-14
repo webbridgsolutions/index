@@ -3,9 +3,17 @@ const cors = require('cors');
 const fetch = require('node-fetch');
 const app = express();
 
-app.use(cors());
+app.use(cors({
+    origin: '*', // Permite cualquier origen (incluyendo wuaze.com / infinityfree)
+    methods: ['POST', 'GET', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+}));
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Manejar explícitamente el Preflight (petición OPTIONS)
+app.options('*', cors());
 
 app.post('/', async (req, res) => {
     const { message, history } = req.body;
