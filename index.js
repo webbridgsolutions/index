@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
 const app = express();
+
 const systemPrompt = `
 Eres el asistente virtual EXCLUSIVO de WebBridge Solutions. 
 Tu misión es convertir visitantes en clientes informados.
@@ -12,6 +13,7 @@ REGLAS CRÍTICAS:
 3. CIERRE: Siempre termina con un CTA (Call to Action). Ejemplo: "...¿Te gustaría agendar una asesoría gratuita?"
 4. RESTRICCIÓN: Si preguntan de temas ajenos, di: "Lo siento, como asistente de WebBridge Solutions, mi especialidad es ayudarte a digitalizar tu negocio. ¿Hablamos de tu próxima web?"
 5. FORMATO: Usa emojis, negritas en los precios y saltos de línea para que sea visualmente atractivo.
+6. CIERRE DE VENTA: Si el usuario muestra interés real, indícale que puede iniciar el proceso de cotización aquí mismo proporcionando sus datos.
 
 BASE DE CONOCIMIENTO:
 - Empresa: WebBridge Solutions (Puebla, México).
@@ -24,7 +26,7 @@ TONO: Profesional, amigable y con la calidez poblana.
 `;
 
 app.use(cors({
-    origin: '*', // Permite cualquier origen (incluyendo wuaze.com / infinityfree)
+    origin: '*',
     methods: ['POST', 'GET', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
@@ -32,16 +34,19 @@ app.use(cors({
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Manejar explícitamente el Preflight (petición OPTIONS)
 app.options('*', cors());
 
 app.post('/', async (req, res) => {
     const { message, history } = req.body;
-    // Ahora usaremos la KEY de Groq
     const apiKey = process.env.GROQ_API_KEY; 
 
     try {
-        let parsedHistory = typeof history === 'string' ? JSON.parse(history) : (history || []);
+        // Corrección: Limpieza profunda del historial para Groq
+        let rawHistory = typeof history === 'string' ? JSON.parse(history) : (history || []);
+        let parsedHistory = rawHistory.map(msg => ({
+            role: msg.role === 'assistant' ? 'assistant' : 'user',
+            content: msg.content
+        })).filter(msg => msg.content);
 
         const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
             method: 'POST',
@@ -50,25 +55,28 @@ app.post('/', async (req, res) => {
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-                // Modelo recomendado por su velocidad y capacidad
                 model: "llama-3.3-70b-versatile", 
                 messages: [
                     { role: "system", content: systemPrompt },
                     ...parsedHistory,
                     { role: "user", content: message }
                 ],
-                // Desactivamos stream para que InfinityFree no dé error 403/500
                 stream: false 
             })
         });
 
         const data = await response.json();
-        res.json({ success: true, message: data.choices[0].message.content });
+        if (data.choices && data.choices[0]) {
+            res.json({ success: true, message: data.choices[0].message.content });
+        } else {
+            throw new Error("Respuesta inválida de Groq");
+        }
 
     } catch (error) {
+        console.error("Error en Render:", error.message);
         res.status(500).json({ success: false, message: error.message });
     }
 });
 
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`Servidor Groq listo en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`Servidor Groq WebBridge listo`));
