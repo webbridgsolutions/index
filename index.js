@@ -43,10 +43,8 @@ app.post('/', async (req, res) => {
     try {
         // Corrección: Limpieza profunda del historial para Groq
         let rawHistory = typeof history === 'string' ? JSON.parse(history) : (history || []);
-        let parsedHistory = rawHistory.map(msg => ({
-            role: msg.role === 'assistant' ? 'assistant' : 'user',
-            content: msg.content
-        })).filter(msg => msg.content);
+        // Filtrar mensajes vacíos para evitar errores 400 de Groq
+        let parsedHistory = rawHistory.filter(msg => msg.content && msg.content.trim() !== "");
 
         const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
             method: 'POST',
