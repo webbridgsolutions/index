@@ -4,471 +4,668 @@ namespace App\Controllers;
 
 use CodeIgniter\RESTful\ResourceController;
 
-class ChatbotController extends ResourceController
+class ChatbotControllerGroq extends ResourceController
 {
     protected $format = 'json';
     
-public function message()
-{
-    // Obtener el origen actual de tu web dinámicamente
-    $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
-    
-    // Solo permitir si el origen es tu propio sitio
-    header("Access-Control-Allow-Origin: $origin");
-    header("Access-Control-Allow-Credentials: true");
-    header("Access-Control-Allow-Methods: POST, OPTIONS");
-    header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With");
-    header('Content-Type: application/json');
+    private $renderUrl = 'https://webbridge-ai.onrender.com';
 
-    // Manejar peticiones preflight (OPTIONS)
-    if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-        exit;
-    }
-
-    try {
-        // Cambiar getJSON() por getPost()
-        $userMessage = $this->request->getPost('message');
-        $historyRaw = $this->request->getPost('history');
-        $conversationHistory = json_decode($historyRaw ?? '[]', true);
-
-        if (empty($userMessage)) {
-            return $this->respond(['success' => false, 'error' => 'Mensaje vacío'], 400);
+    public function message()
+    {
+        // HABILITAR HEADERS CORS
+        $origin = $_SERVER['HTTP_ORIGIN'] ?? '*';
+        header("Access-Control-Allow-Origin: $origin");
+        header('Access-Control-Allow-Methods: POST, OPTIONS');
+        header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With');
+        header('Access-Control-Allow-Credentials: true');
+        
+        if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+            exit;
         }
 
-            // ✅ DETECTAR SI ESTAMOS EN INFINITYFREE O HOSTING COMPATIBLE
-            $canUseAPI = $this->canUseExternalAPI();
-            $apiKey = getenv('ANTHROPIC_API_KEY');
+        try {
+            // Obtener datos del post
+            $userMessage = $this->request->getPost('message');
+            $historyRaw = $this->request->getPost('history');
+            $conversationHistory = json_decode($historyRaw ?? '[]', true);
 
-            // Si no podemos usar API o no hay key, usar fallback directo
-            if (!$canUseAPI || empty($apiKey)) {
-                log_message('info', 'Chatbot en modo fallback - Hosting incompatible o sin API key');
-                return $this->respond([
-                    'success' => true,
-                    'message' => $this->getSmartFallbackResponse($userMessage),
-                    'mode' => 'fallback',
-                    'timestamp' => date('Y-m-d H:i:s')
-                ]);
+            if (empty($userMessage)) {
+                return $this->respond(['success' => false, 'error' => 'Mensaje vacío'], 400);
             }
 
-            // Intentar API de Anthropic
-            $response = $this->callAnthropicAPI($userMessage, $conversationHistory);
+            // Intentar llamar a Render
+            $response = $this->callRenderProxy($userMessage, $conversationHistory);
 
             if ($response['success']) {
                 return $this->respond([
                     'success' => true,
                     'message' => $response['message'],
-                    'mode' => 'ai',
+                    'mode' => 'ai_render',
                     'timestamp' => date('Y-m-d H:i:s')
                 ]);
             } else {
-                // Si falla la API, usar fallback
-                log_message('warning', 'API falló, usando fallback: ' . ($response['error'] ?? 'Unknown'));
+                // Fallback local
+                log_message('warning', 'Render falló, usando fallback local: ' . ($response['error'] ?? 'Unknown'));
                 
                 return $this->respond([
                     'success' => true,
                     'message' => $this->getSmartFallbackResponse($userMessage),
-                    'mode' => 'fallback',
+                    'mode' => 'fallback_local',
                     'timestamp' => date('Y-m-d H:i:s')
                 ]);
             }
 
         } catch (\Exception $e) {
-            log_message('error', 'Error en chatbot: ' . $e->getMessage());
-            
+            log_message('error', 'Error en controlador: ' . $e->getMessage());
             return $this->respond([
-                'success' => true, // ✅ Cambiar a true para no romper el chat
-                'message' => $this->getSmartFallbackResponse($json->message ?? ''),
-                'mode' => 'fallback',
+                'success' => true, 
+                'message' => $this->getSmartFallbackResponse($userMessage ?? ''),
+                'mode' => 'fallback_exception',
                 'timestamp' => date('Y-m-d H:i:s')
             ], 200);
         }
     }
 
     /**
-     * ✅ NUEVA FUNCIÓN: Detecta si el hosting permite llamadas externas
+     * Enviar formulario de cotización o cita
      */
-    private function canUseExternalAPI(): bool
-    {
-        // Lista de hostings que NO permiten llamadas externas
-        $blockedHostings = [
-            'infinityfree',
-            'freehosting',
-            '000webhost'
-        ];
+  
+public function sendQuoteRequest()
+{
+    $nombre   = $this->request->getPost('nombre');
+    $email    = $this->request->getPost('email');
+    $telefono = $this->request->getPost('telefono');
+    $tipo     = $this->request->getPost('tipo') ?? 'cotización';
+    $detalles = $this->request->getPost('detalles');
 
-        $serverName = strtolower($_SERVER['SERVER_NAME'] ?? '');
-        $serverSoftware = strtolower($_SERVER['SERVER_SOFTWARE'] ?? '');
-
-        // Verificar si estamos en hosting bloqueado
-        foreach ($blockedHostings as $blocked) {
-            if (strpos($serverName, $blocked) !== false || 
-                strpos($serverSoftware, $blocked) !== false) {
-                return false;
-            }
-        }
-
-        // Verificar si curl está disponible y funcional
-        if (!function_exists('curl_init')) {
-            return false;
-        }
-
-        // ✅ Verificar si allow_url_fopen está habilitado (común en hosting gratuitos)
-        if (!ini_get('allow_url_fopen')) {
-            log_message('info', 'allow_url_fopen deshabilitado - usando fallback');
-            return false;
-        }
-
-        return true;
+    if ($nombre && $email) {
+        $this->sendEmail($nombre, $email, $telefono, $tipo, $detalles);
+        
+        // 🔥 Guardamos el mensaje en la sesión (Flash Data)
+        session()->setFlashdata('status_chatbot', 'success');
+        
+        return redirect()->to(base_url('#contacto'));
     }
 
-    private function callAnthropicAPI(string $userMessage, array $conversationHistory = []): array
+    session()->setFlashdata('status_chatbot', 'error');
+    return redirect()->to(base_url());
+}
+    
+    /**
+     * Enviar email con la solicitud
+     */
+    private function sendEmail($nombre, $email, $telefono, $tipo, $detalles)
     {
         try {
-            $apiKey = getenv('ANTHROPIC_API_KEY');
+            $emailService = \Config\Services::email();
             
-            if (empty($apiKey)) {
-                return ['success' => false, 'error' => 'API Key no configurada'];
+            $emailService->setFrom('webbridgsolucions@gmail.com', 'WebBridge AI Chatbot');
+            $emailService->setTo('webbridgsolucions@gmail.com');
+            $emailService->setSubject('Nueva Solicitud de ' . ucfirst($tipo) . ' desde Chatbot');
+
+            $message = "
+            <html>
+            <head>
+                <style>
+                    body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+                    .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+                    .header { background: linear-gradient(135deg, #1e3a8a 0%, #3b82f6 100%); color: white; padding: 20px; border-radius: 8px 8px 0 0; }
+                    .content { background: #f9fafb; padding: 30px; border-radius: 0 0 8px 8px; }
+                    .field { margin-bottom: 15px; padding: 10px; background: white; border-radius: 5px; }
+                    .field strong { color: #1e3a8a; }
+                    .footer { text-align: center; margin-top: 20px; color: #6b7280; font-size: 12px; }
+                </style>
+            </head>
+            <body>
+                <div class='container'>
+                    <div class='header'>
+                        <h2>🤖 Nueva Solicitud desde WebBridge AI</h2>
+                    </div>
+                    <div class='content'>
+                        <p>Has recibido una nueva solicitud de <strong>" . ucfirst($tipo) . "</strong> a través del chatbot:</p>
+                        
+                        <div class='field'>
+                            <strong>👤 Nombre:</strong><br>
+                            " . htmlspecialchars($nombre) . "
+                        </div>
+                        
+                        <div class='field'>
+                            <strong>📧 Email:</strong><br>
+                            <a href='mailto:" . htmlspecialchars($email) . "'>" . htmlspecialchars($email) . "</a>
+                        </div>
+                        
+                        <div class='field'>
+                            <strong>📞 Teléfono:</strong><br>
+                            " . (!empty($telefono) ? htmlspecialchars($telefono) : 'No proporcionado') . "
+                        </div>
+                        
+                        <div class='field'>
+                            <strong>📝 Tipo de Solicitud:</strong><br>
+                            " . ucfirst($tipo) . "
+                        </div>
+                        
+                        <div class='field'>
+                            <strong>💬 Detalles:</strong><br>
+                            " . nl2br(htmlspecialchars($detalles)) . "
+                        </div>
+                        
+                        <div class='footer'>
+                            <p>Este mensaje fue generado automáticamente por WebBridge AI Chatbot</p>
+                            <p>📅 " . date('d/m/Y H:i:s') . "</p>
+                        </div>
+                    </div>
+                </div>
+            </body>
+            </html>
+            ";
+
+            $emailService->setMessage($message);
+            
+            if ($emailService->send()) {
+                log_message('info', 'Email enviado correctamente a webbridgsolucions@gmail.com');
+                echo 'no error';
+                //return true;
+            } else {
+                log_message('error', 'Error al enviar email: ' . $emailService->printDebugger(['headers']));
+                echo 'error';
+                //return false;
             }
 
-            $systemPrompt = $this->getWebBridgeKnowledge();
-            $messages = array_slice($conversationHistory, -10);
-            $messages[] = [
-                'role' => 'user',
-                'content' => $userMessage
-            ];
+        } catch (\Exception $e) {
+            log_message('error', 'Excepción al enviar email: ' . $e->getMessage());
+            echo 'error';
+            //return false;
+        }
+    }
 
+    private function callRenderProxy(string $userMessage, array $conversationHistory): array
+    {
+        try {
             $data = [
-                'model' => 'claude-sonnet-4-20250514',
-                'max_tokens' => 1500,
-                'system' => $systemPrompt,
-                'messages' => $messages
+                'message' => $userMessage,
+                'history' => $conversationHistory
             ];
 
-            $ch = curl_init('https://api.anthropic.com/v1/messages');
+            $ch = curl_init($this->renderUrl);
             curl_setopt_array($ch, [
-    CURLOPT_RETURNTRANSFER => true,
-    CURLOPT_POST => true,
-    CURLOPT_POSTFIELDS => json_encode($data),
-    CURLOPT_HTTPHEADER => [
-        'Content-Type: application/json',
-        'x-api-key: ' . $apiKey,
-        'anthropic-version: 2023-06-01'
-    ],
-    // 🔥 AGREGA ESTA LÍNEA PARA ENGAÑAR AL HOSTING
-    CURLOPT_USERAGENT => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    CURLOPT_TIMEOUT => 20,
-    CURLOPT_SSL_VERIFYPEER => false // A veces necesario en hostings gratuitos
-]);
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_POST => true,
+                CURLOPT_POSTFIELDS => json_encode($data),
+                CURLOPT_HTTPHEADER => [
+                    'Content-Type: application/json'
+                ],
+                CURLOPT_TIMEOUT => 25,
+                CURLOPT_CONNECTTIMEOUT => 10,
+                CURLOPT_SSL_VERIFYPEER => false
+            ]);
 
-            $response = curl_exec($ch);
+            $result = curl_exec($ch);
             $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            $curlError = curl_error($ch);
+            $error = curl_error($ch);
             curl_close($ch);
 
-            if ($response === false) {
-                log_message('error', 'cURL Error: ' . $curlError);
-                return ['success' => false, 'error' => 'Error de conexión: ' . $curlError];
+            if ($result === false) {
+                return ['success' => false, 'error' => $error];
             }
 
-            if ($httpCode !== 200) {
-                log_message('error', 'API Error: HTTP ' . $httpCode . ' - ' . $response);
-                return ['success' => false, 'error' => 'Error de API: ' . $httpCode];
-            }
-
-            $result = json_decode($response, true);
-
-            if (isset($result['content'][0]['text'])) {
+            $response = json_decode($result, true);
+            
+            if ($httpCode === 200 && isset($response['success']) && $response['success'] === true) {
                 return [
                     'success' => true,
-                    'message' => $result['content'][0]['text']
+                    'message' => $response['message']
                 ];
             }
 
-            return ['success' => false, 'error' => 'Respuesta inválida'];
+            return ['success' => false, 'error' => 'Status Code: ' . $httpCode];
 
         } catch (\Exception $e) {
-            log_message('error', 'Exception en API: ' . $e->getMessage());
             return ['success' => false, 'error' => $e->getMessage()];
         }
     }
 
-    // ✅ FALLBACK MEJORADO - Responde preguntas específicas
     private function getSmartFallbackResponse(string $message): string
     {
         $lowerMessage = strtolower($message);
         $lowerMessage = $this->removeAccents($lowerMessage);
 
-        // ========== PREGUNTAS SOBRE LA EMPRESA ==========
-        if (preg_match('/(que es|qué es|quienes son|quién es|quiénes son|sobre|acerca de|informacion sobre|información sobre).*(webbridge|empresa|ustedes|negocio)/i', $lowerMessage)) {
-            return "🏢 **WebBridge Solutions** es una empresa de desarrollo web profesional en Puebla, México.\n\n" .
+        // ── PROYECTOS ──────────────────────────────────────────────────────
+        if (preg_match('/(proyecto|portafolio|ejemplo|trabajo|plateria|cafeteria|dies|liee|hp330|agrodata|bridlux)/i', $lowerMessage)) {
+            return "💼 **Proyectos Destacados de WebBridge Solutions:**\n\n" .
+                   "**1. Platería Futura** 🏆 _(En línea)_\n" .
+                   "• E-commerce completo de joyería de plata\n" .
+                   "• Catálogo interactivo con carrito de compras\n" .
+                   "• Pagos seguros integrados con Stripe\n" .
+                   "• Chatbot de atención al cliente con IA\n" .
+                   "• Tecnologías: CodeIgniter 4, PHP, MySQL, Stripe, IA\n\n" .
+                   "**2. BUAP Cafetería** ☕ _(Privado)_\n" .
+                   "• Sistema de gestión para cafetería universitaria\n" .
+                   "• Menú digital interactivo con carrito de pedidos\n" .
+                   "• Chatbot automatizado para toma de órdenes\n" .
+                   "• Dashboard de administración y reportes de ventas\n" .
+                   "• Tecnologías: CodeIgniter 4, PHP, MySQL, IA\n\n" .
+                   "**3. DIES — Diseños Especiales de Seguridad** 🔒 _(Finalizado)_\n" .
+                   "• Catálogo digital profesional de cajas fuertes\n" .
+                   "• Chatbot de atención y presentación de productos\n" .
+                   "• Diseño responsivo y corporativo\n" .
+                   "• Tecnologías: CodeIgniter 4, PHP, MySQL\n\n" .
+                   "**4. HP330 Spectral Measurement System** ⚡ _(LIEE — Privado)_\n" .
+                   "• Software para medidor de iluminancia espectral HP330\n" .
+                   "• Gestión de conjuntos, gráficas CIE y exportación de reportes\n" .
+                   "• Desarrollado para el Lab. de Iluminación y Eficiencia Energética\n" .
+                   "• Tecnologías: CodeIgniter 4, JavaScript, MySQL, Python\n\n" .
+                   "**5. AgroData System** 🌱 _(En desarrollo)_\n" .
+                   "• Sistema de monitoreo para agricultura de precisión\n" .
+                   "• IA para análisis predictivo de cultivos\n" .
+                   "• Dashboard climático con API Conagua México\n" .
+                   "• Tecnologías: CodeIgniter 4, JavaScript, MySQL, API Conagua, IA\n\n" .
+                   "**6. BridLux POS** 🏪 _(Producto propio)_\n" .
+                   "• Sistema de punto de venta híbrido (local + nube)\n" .
+                   "• Funciona con Wi-Fi propio sin necesidad de internet\n" .
+                   "• Control de inventario, ventas y reportes en tiempo real\n\n" .
+                   "¿Te gustaría algo similar para tu negocio? 🚀";
+        }
+
+        // ── BRIDLUX POS ────────────────────────────────────────────────────
+        if (preg_match('/(bridlux|punto de venta|pos|inventario|venta|tienda fisica)/i', $lowerMessage)) {
+            return "🏪 **BridLux — Sistema Punto de Venta**\n\n" .
+                   "Nuestro producto propio de POS híbrido:\n\n" .
+                   "• Funciona **local y en la nube** — opera aunque no haya internet\n" .
+                   "• Crea su propio Wi-Fi para conectar dispositivos\n" .
+                   "• Control de inventario en tiempo real\n" .
+                   "• Gestión de ventas, tickets y facturas\n" .
+                   "• Reportes automáticos de ventas y dashboard analítico\n" .
+                   "• Compatible con tablets, celulares y PC\n\n" .
+                   "**Planes disponibles:** Básico · Profesional · Empresarial\n\n" .
+                   "¿Quieres una demo o cotización? 📞 2761334864";
+        }
+
+        // ── IA / INTELIGENCIA ARTIFICIAL ──────────────────────────────────
+        if (preg_match('/(inteligencia artificial|ia|chatbot|automatizar|machine learning|ai)/i', $lowerMessage)) {
+            return "🤖 **Implementación de Inteligencia Artificial**\n\n" .
+                   "Integramos IA en tus sistemas y páginas web:\n\n" .
+                   "• **Chatbots inteligentes** — atención 24/7 automatizada\n" .
+                   "• **Análisis predictivo** — anticipa tendencias de tu negocio\n" .
+                   "• **Automatización de procesos** — elimina tareas repetitivas\n" .
+                   "• **Asistentes virtuales** con voz y texto\n" .
+                   "• **Integración con APIs de IA** (GPT, Groq, etc.)\n\n" .
+                   "Disponible en los paquetes **WebElite**, **WebShop** y **WebCustom**.\n\n" .
+                   "¿Te interesa automatizar algún proceso de tu negocio? 💡";
+        }
+
+        // ── REALIDAD AUMENTADA / 3D ────────────────────────────────────────
+        if (preg_match('/(realidad aumentada|ar|3d|recorrido virtual|360|virtual|augmented)/i', $lowerMessage)) {
+            return "🥽 **Realidad Aumentada y Recorridos 3D**\n\n" .
+                   "**Realidad Aumentada (AR):**\n" .
+                   "• Visualización de productos en el espacio real\n" .
+                   "• Aplicaciones AR para móvil y web\n" .
+                   "• **AR Vision 360** — \$25,000 MXN\n\n" .
+                   "**Recorridos Virtuales 3D:**\n" .
+                   "• Tours virtuales de inmuebles, negocios o instalaciones\n" .
+                   "• Compatible con cualquier dispositivo\n" .
+                   "• **Recorridos 3D** — \$20,000 MXN\n\n" .
+                   "Ideal para inmobiliarias, restaurantes, hoteles y tiendas. ¿Cotizamos? 📞";
+        }
+
+        // ── COTIZACIÓN / CITA ──────────────────────────────────────────────
+        if (preg_match('/(cotiz|presupuesto|agendar|cita|reunion|precio proyecto|quiero|necesito)/i', $lowerMessage)) {
+            return "📋 **Solicitar Cotización**\n\n" .
+                   "¡Con gusto te ayudamos!\n\n" .
+                   "Para preparar tu cotización personalizada necesito:\n\n" .
+                   "**👤 Tu nombre completo**\n" .
+                   "**📧 Tu correo electrónico**\n" .
+                   "**📞 Tu teléfono** (opcional)\n" .
+                   "**💬 Descripción de tu proyecto**\n\n" .
+                   "O contáctanos directamente:\n" .
+                   "📱 **WhatsApp:** 2761334864\n" .
+                   "📧 **Email:** webbridgsolucions@gmail.com\n\n" .
+                   "Te respondemos en **menos de 24 horas**. 🚀";
+        }
+
+        // ── SOBRE LA EMPRESA ───────────────────────────────────────────────
+        if (preg_match('/(que es|quienes son|sobre|acerca|empresa|webbridge|quien|historia|mision|vision)/i', $lowerMessage)) {
+            return "🏢 **¿Quiénes somos?**\n\n" .
+                   "**WebBridge Solutions** somos una empresa mexicana de desarrollo web profesional con sede en Puebla, México.\n\n" .
+                   "**Nuestra misión:** Ser el puente que conecta tu empresa con el mundo digital.\n\n" .
                    "**Nos especializamos en:**\n" .
-                   "• Desarrollo web desde cero (NO usamos plantillas)\n" .
-                   "• Sistemas personalizados para empresas\n" .
+                   "• Desarrollo web 100% personalizado (sin plantillas)\n" .
+                   "• Sistemas de gestión empresarial\n" .
                    "• E-commerce completo\n" .
-                   "• Chatbots inteligentes con IA\n" .
+                   "• Inteligencia Artificial aplicada\n" .
+                   "• BridLux POS — punto de venta propio\n" .
                    "• Realidad aumentada y recorridos 3D\n\n" .
-                   "**¿Por qué elegirnos?**\n" .
-                   "✅ Todo desarrollado a medida\n" .
-                   "✅ Código limpio y profesional\n" .
-                   "✅ Soporte y capacitación incluidos\n" .
-                   "✅ Dominio y hosting el primer año gratis\n\n" .
-                   "¿Te gustaría conocer nuestros paquetes?";
+                   "**Valores:** Excelencia · Innovación · Colaboración · Confianza\n\n" .
+                   "**+50 proyectos** · **+30 clientes** · Calificación **5 ⭐**\n\n" .
+                   "¿Quieres conocer nuestros paquetes y servicios?";
         }
 
-        // ========== UBICACIÓN ==========
-        if (preg_match('/(donde|dónde|ubicacion|ubicación|direccion|dirección|oficina)/i', $lowerMessage)) {
-            return "📍 **Ubicación:**\n\n" .
-                   "Estamos ubicados en **Puebla, México**.\n\n" .
-                   "**Formas de contacto:**\n" .
-                   "📞 Teléfono/WhatsApp: 2761334864\n" .
-                   "📧 Email: webbridgsolucions@gmail.com\n" .
-                   "⏰ Horario: Lunes a Viernes, 8:00 AM - 6:00 PM\n\n" .
-                   "¿Necesitas más información?";
+        // ── SOPORTE / MANTENIMIENTO ────────────────────────────────────────
+        if (preg_match('/(soporte|mantenimiento|garantia|actualizacion|despues|post)/i', $lowerMessage)) {
+            return "🛠️ **Soporte Técnico Incluido**\n\n" .
+                   "• **WebStart / WebPro** — 6 meses de soporte\n" .
+                   "• **WebCorp** — 8 meses de soporte\n" .
+                   "• **WebElite / WebShop** — 12 meses de soporte\n" .
+                   "• **WebCustom** — Soporte premium dedicado\n\n" .
+                   "También ofrecemos **planes de mantenimiento extendido**.\n\n" .
+                   "📞 2761334864 · 📧 webbridgsolucions@gmail.com";
         }
 
-        // ========== TIEMPO DE DESARROLLO ==========
-        if (preg_match('/(cuanto (tiempo|demora)|cuánto (tiempo|demora)|plazo|entrega|duracion|duración)/i', $lowerMessage)) {
-            return "⏱️ **Tiempos de Desarrollo:**\n\n" .
-                   "• **WebStart (Básico):** 2-3 semanas\n" .
-                   "• **WebPro (Intermedio):** 3-4 semanas\n" .
-                   "• **WebCorp (Empresarial):** 4-5 semanas\n" .
-                   "• **WebElite (Avanzado):** 5-6 semanas\n" .
-                   "• **WebShop (E-Commerce):** 6-8 semanas\n" .
-                   "• **Recorridos 3D/AR:** 6-10 semanas\n\n" .
-                   "Los tiempos pueden variar según la complejidad y contenido del proyecto.\n\n" .
-                   "¿Quieres una cotización para tu proyecto?";
+        // ── PAGOS ──────────────────────────────────────────────────────────
+        if (preg_match('/(pago|pagar|factura|transferencia|deposito|credito|mensualidad|abono)/i', $lowerMessage)) {
+            return "💳 **Formas de Pago**\n\n" .
+                   "• Transferencia bancaria (SPEI)\n" .
+                   "• Depósito bancario\n" .
+                   "• Tarjeta de crédito/débito\n" .
+                   "• PayPal\n\n" .
+                   "**Esquema habitual:**\n" .
+                   "• 50% al inicio del proyecto\n" .
+                   "• 50% al finalizar y aprobar\n\n" .
+                   "También manejamos **planes de pago** según el proyecto.\n\n" .
+                   "📞 2761334864";
         }
 
-        // ========== FORMAS DE PAGO ==========
-        if (preg_match('/(como pago|cómo pago|forma de pago|metodo de pago|método de pago|pagar|pagos)/i', $lowerMessage)) {
-            return "💳 **Formas de Pago:**\n\n" .
-                   "Aceptamos varios métodos:\n" .
-                   "• Transferencia bancaria\n" .
-                   "• Depósito en efectivo\n" .
-                   "• PayPal\n" .
-                   "• Pagos en parcialidades (según el paquete)\n\n" .
-                   "**Proceso de pago típico:**\n" .
-                   "1. 50% anticipo al iniciar\n" .
-                   "2. 50% restante al finalizar\n\n" .
-                   "¿Te gustaría iniciar un proyecto?";
+        // ── UBICACIÓN ─────────────────────────────────────────────────────
+        if (preg_match('/(donde|ubicacion|direccion|oficina|ciudad|estado)/i', $lowerMessage)) {
+            return "📍 **Ubicación**\n\n" .
+                   "**Puebla, México**\n" .
+                   "Atendemos clientes de toda la República de forma remota.\n\n" .
+                   "📞 WhatsApp: 2761334864\n" .
+                   "📧 webbridgsolucions@gmail.com\n" .
+                   "⏰ Lun–Vie: 8:00 AM – 6:00 PM\n\n" .
+                   "🌐 Instagram: @webbridgesol · TikTok: @webbridgesolutions";
         }
 
-        // ========== SOPORTE Y MANTENIMIENTO ==========
-        if (preg_match('/(soporte|mantenimiento|ayuda|asistencia|garantia|garantía)/i', $lowerMessage)) {
-            return "🛠️ **Soporte y Mantenimiento:**\n\n" .
-                   "**Soporte incluido por paquete:**\n" .
-                   "• WebStart: Soporte básico\n" .
-                   "• WebPro: 6 meses de soporte\n" .
-                   "• WebCorp: 8 meses de soporte\n" .
-                   "• WebElite: 1 año de soporte completo\n" .
-                   "• WebShop: 1 año de soporte completo\n\n" .
-                   "**El soporte incluye:**\n" .
-                   "✅ Actualizaciones de seguridad\n" .
-                   "✅ Corrección de errores\n" .
-                   "✅ Asesoría técnica\n" .
-                   "✅ Capacitación\n\n" .
-                   "¿Necesitas más detalles sobre algún paquete?";
+        // ── TIEMPOS DE ENTREGA ─────────────────────────────────────────────
+        if (preg_match('/(cuanto tiempo|plazo|entrega|duracion|cuando esta|semana)/i', $lowerMessage)) {
+            return "⏱️ **Tiempos de Desarrollo**\n\n" .
+                   "• **WebStart** — 1–2 semanas\n" .
+                   "• **WebPro** — 2–3 semanas\n" .
+                   "• **WebCorp** — 3–4 semanas\n" .
+                   "• **WebElite** — 4–6 semanas\n" .
+                   "• **WebShop** — 5–7 semanas\n" .
+                   "• **Recorridos 3D** — 4–6 semanas\n" .
+                   "• **AR Vision 360** — 6–8 semanas\n" .
+                   "• **WebCustom** — Según alcance\n\n" .
+                   "¿Tienes una fecha límite? Te ayudamos a planificar. 📅";
         }
 
-        // ========== TECNOLOGÍAS ==========
-        if (preg_match('/(tecnologia|tecnología|lenguaje|framework|que usan|qué usan|como desarrollan|cómo desarrollan)/i', $lowerMessage)) {
-            return "💻 **Tecnologías que Usamos:**\n\n" .
-                   "**Backend:**\n" .
-                   "• PHP 8 (moderno y seguro)\n" .
-                   "• CodeIgniter 4 (framework profesional)\n" .
-                   "• MySQL (base de datos robusta)\n\n" .
-                   "**Frontend:**\n" .
-                   "• HTML5, CSS3, JavaScript\n" .
-                   "• Bootstrap / Tailwind CSS\n" .
-                   "• React (para apps avanzadas)\n\n" .
-                   "**Extras:**\n" .
-                   "• API REST\n" .
-                   "• Integración con IA (Claude, ChatGPT)\n" .
-                   "• WebGL para 3D\n\n" .
-                   "Todo desarrollado con **código limpio y profesional**. ¿Te interesa?";
+        // ── PAQUETES / PRECIOS ─────────────────────────────────────────────
+        if (preg_match('/(paquete|precio|costo|cuanto cuesta|plan|tarifa|econom|barat|car)/i', $lowerMessage)) {
+            return "📦 **Paquetes WebBridge Solutions**\n\n" .
+                   "**1. WebStart Básico** — \$4,000 MXN\n" .
+                   "Diseño web, dominio, hosting 1 año, SSL, responsivo, SEO básico\n\n" .
+                   "**2. WebPro Intermedio** — \$5,500 MXN\n" .
+                   "Todo lo anterior + chatbot IA, panel de admin, galería, redes, 6 meses soporte\n\n" .
+                   "**3. WebCorp Empresarial** — \$8,000 MXN\n" .
+                   "Diseño corporativo, blog, Analytics, SEO avanzado, backup, 8 meses soporte\n\n" .
+                   "**4. WebElite Avanzado** ⭐ _(Más popular)_ — \$10,000 MXN\n" .
+                   "Login/registro, chatbot IA avanzado, sistema gestión, dashboard, APIs, 12 meses soporte\n\n" .
+                   "**5. WebShop E-Commerce** — \$15,000 MXN\n" .
+                   "Tienda completa, Stripe/PayPal, inventario, cupones, estadísticas, 12 meses soporte\n\n" .
+                   "**Extras:** Recorridos 3D \$20,000 · AR Vision 360 \$25,000 · WebCustom a medida\n\n" .
+                   "Todos incluyen **dominio y hosting por 1 año**. 🎁\n\n" .
+                   "¿Cuál se adapta mejor a tu negocio?";
         }
 
-        // ========== DIFERENCIA CON COMPETENCIA ==========
-        if (preg_match('/(por que|por qué|diferencia|ventaja|mejor que|comparado)/i', $lowerMessage)) {
-            return "⭐ **¿Por qué Elegir WebBridge Solutions?**\n\n" .
-                   "**Nos diferenciamos en:**\n\n" .
-                   "1. **100% Personalizado**\n" .
-                   "   → NO usamos plantillas genéricas\n" .
-                   "   → Todo hecho a la medida\n\n" .
-                   "2. **Tecnología Moderna**\n" .
-                   "   → PHP 8, CodeIgniter 4\n" .
-                   "   → Código limpio y escalable\n\n" .
-                   "3. **Todo Incluido**\n" .
-                   "   → Dominio 1 año gratis\n" .
-                   "   → Hosting 1 año gratis\n" .
-                   "   → SSL certificado\n" .
-                   "   → Capacitación completa\n\n" .
-                   "4. **Soporte Real**\n" .
-                   "   → No te abandonamos\n" .
-                   "   → Actualizaciones incluidas\n\n" .
-                   "**Calidad profesional a precios justos.** ¿Hablamos de tu proyecto?";
+        // ── TECNOLOGÍAS ────────────────────────────────────────────────────
+        if (preg_match('/(tecnologia|lenguaje|programacion|php|javascript|react|mysql|framework|backend|frontend)/i', $lowerMessage)) {
+            return "💻 **Tecnologías que usamos**\n\n" .
+                   "**Backend:** PHP 8, CodeIgniter 4, MySQL, Python\n" .
+                   "**Frontend:** HTML5, CSS3, JavaScript ES6+, React.js\n" .
+                   "**Pagos:** Stripe, PayPal\n" .
+                   "**IA:** Groq, GPT y APIs de IA\n" .
+                   "**3D/AR:** WebGL, Three.js\n" .
+                   "**Otros:** API REST, API Conagua, WebSockets\n\n" .
+                   "¿Tienes alguna tecnología específica en mente?";
         }
 
-        // ========== PAQUETES Y PRECIOS ==========
-        if (preg_match('/(paquete|precio|costo|cuanto cuesta|cuánto cuesta|tarifa)/i', $lowerMessage)) {
-            return "📦 **Paquetes de WebBridge Solutions:**\n\n" .
-                   "1. **WebStart Básico** - \$4,000 MXN\n" .
-                   "   → 5 secciones + Dominio + Hosting + SSL\n\n" .
-                   "2. **WebPro Intermedio** - \$5,500 MXN\n" .
-                   "   → 8 secciones + Panel Admin + Chatbot + Blog\n\n" .
-                   "3. **WebCorp Empresarial** - \$8,000 MXN\n" .
-                   "   → 12 secciones + CRM + Múltiples usuarios\n\n" .
-                   "4. **WebElite Avanzado** - \$10,000 MXN ⭐\n" .
-                   "   → Ilimitado + IA + Dashboard + API\n\n" .
-                   "5. **WebShop E-Commerce** - \$15,000 MXN\n" .
-                   "   → Tienda completa + Pagos + Inventario\n\n" .
-                   "**Servicios Extra:**\n" .
-                   "• Recorridos 3D: \$20,000 MXN\n" .
-                   "• AR Vision 360: \$25,000 MXN\n\n" .
-                   "Todos incluyen dominio, hosting y SSL el primer año. ¿Cuál te interesa?";
+        // ── SERVICIOS ──────────────────────────────────────────────────────
+        if (preg_match('/(servicio|que hacen|ofrecen|hacen|desarrollan)/i', $lowerMessage)) {
+            return "🚀 **Servicios de WebBridge Solutions**\n\n" .
+                   "🌐 Desarrollo web profesional personalizado\n" .
+                   "📱 Diseño responsivo (móvil, tablet, escritorio)\n" .
+                   "🏢 Sistemas empresariales (CRM, ERP, POS)\n" .
+                   "🛒 E-commerce con pagos integrados\n" .
+                   "🤖 Chatbots con Inteligencia Artificial\n" .
+                   "🥽 Realidad Aumentada (AR)\n" .
+                   "🌐 Recorridos Virtuales 3D\n" .
+                   "📊 Analytics y reportes\n" .
+                   "📧 Sistemas de correo profesional\n" .
+                   "🏪 BridLux POS — punto de venta propio\n\n" .
+                   "¿Qué servicio necesita tu negocio? 💡";
         }
 
-        // ========== CONTACTO ==========
-        if (preg_match('/(contacto|contactar|telefono|teléfono|whatsapp|email|correo|llamar|escribir)/i', $lowerMessage)) {
-            return "📞 **Información de Contacto:**\n\n" .
-                   "**Teléfono/WhatsApp:** 2761334864\n" .
-                   "**Email:** webbridgsolucions@gmail.com\n" .
-                   "**Ubicación:** Puebla, México\n" .
-                   "**Horario:** Lunes a Viernes, 8:00 AM - 6:00 PM\n\n" .
-                   "**Puedes contactarnos para:**\n" .
-                   "✅ Cotizaciones personalizadas\n" .
-                   "✅ Asesoría gratuita\n" .
-                   "✅ Dudas sobre proyectos\n" .
-                   "✅ Soporte técnico\n\n" .
-                   "**¡Respuesta garantizada en menos de 24 horas!**";
+        // ── CONTACTO ───────────────────────────────────────────────────────
+        if (preg_match('/(contacto|telefono|whatsapp|email|correo|llamar|escribir|comunicar)/i', $lowerMessage)) {
+            return "📞 **Contáctanos**\n\n" .
+                   "📱 **WhatsApp:** 2761334864\n" .
+                   "📧 **Email:** webbridgsolucions@gmail.com\n" .
+                   "⏰ **Horario:** Lun–Vie 8:00 AM – 6:00 PM\n\n" .
+                   "**Redes sociales:**\n" .
+                   "• Facebook: /webbridgesolutions\n" .
+                   "• Instagram: @webbridgesol\n" .
+                   "• TikTok: @webbridgesolutions\n\n" .
+                   "¡Respondemos en menos de 24 horas! 🚀";
         }
 
-        // ========== SERVICIOS ==========
-        if (preg_match('/(servicio|que hacen|qué hacen|ofrec)/i', $lowerMessage)) {
-            return "🚀 **Nuestros Servicios:**\n\n" .
-                   "**Desarrollo Web:**\n" .
-                   "• Sitios web profesionales\n" .
-                   "• Diseño responsivo (móvil, tablet, PC)\n" .
-                   "• Landing pages de alto impacto\n\n" .
-                   "**Sistemas Empresariales:**\n" .
-                   "• CRM/ERP personalizados\n" .
-                   "• Sistemas de gestión\n" .
-                   "• Puntos de venta (POS)\n\n" .
-                   "**E-Commerce:**\n" .
-                   "• Tiendas online completas\n" .
-                   "• Pagos en línea seguros\n" .
-                   "• Gestión de inventario\n\n" .
-                   "**Tecnologías Avanzadas:**\n" .
-                   "• Chatbots con IA\n" .
-                   "• Realidad Aumentada (AR)\n" .
-                   "• Recorridos Virtuales 3D\n\n" .
-                   "¿Qué servicio necesitas?";
+        // ── SALUDOS ────────────────────────────────────────────────────────
+        if (preg_match('/^(hola|hello|hi|buenos|hey|buenas|saludos|que tal|como estas)/i', $lowerMessage)) {
+            return "¡Hola! 👋 Soy el asistente de **WebBridge Solutions**.\n\n" .
+                   "Estoy aquí para ayudarte con todo lo que necesites:\n\n" .
+                   "📦 **Paquetes** — desde \$4,000 MXN\n" .
+                   "🚀 **Servicios** — web, IA, AR, POS y más\n" .
+                   "💼 **Proyectos** — conoce nuestro portafolio\n" .
+                   "🏪 **BridLux POS** — nuestro punto de venta\n" .
+                   "⏱️ **Tiempos** — plazos de entrega\n" .
+                   "📞 **Contacto** — 2761334864\n\n" .
+                   "**¿En qué puedo ayudarte hoy?** 😊";
         }
 
-        // ========== E-COMMERCE ==========
-        if (preg_match('/(tienda|ecommerce|e-commerce|venta online|vender online|carrito)/i', $lowerMessage)) {
-            return "🛒 **Paquete E-Commerce - \$15,000 MXN**\n\n" .
-                   "**Incluye todo lo necesario:**\n\n" .
-                   "✅ Catálogo ilimitado de productos\n" .
-                   "✅ Carrito de compras avanzado\n" .
-                   "✅ Pasarela de pagos (Stripe/PayPal/MercadoPago)\n" .
-                   "✅ Gestión automática de inventario\n" .
-                   "✅ Sistema de envíos\n" .
-                   "✅ Cupones y descuentos\n" .
-                   "✅ Panel de administración completo\n" .
-                   "✅ Reportes de ventas en tiempo real\n" .
-                   "✅ Soporte 1 año\n\n" .
-                   "**Tiempo de desarrollo:** 6-8 semanas\n\n" .
-                   "¿Te gustaría una cotización personalizada?";
-        }
-
-        // ========== PROYECTOS / PORTAFOLIO ==========
-        if (preg_match('/(proyecto|portafolio|trabajo|ejemplo|han hecho|hicieron)/i', $lowerMessage)) {
-            return "💼 **Proyectos Destacados:**\n\n" .
-                   "1. **Platería Futura**\n" .
-                   "   → E-commerce completo con sistema de pagos\n" .
-                   "   → Gestión de inventario automática\n\n" .
-                   "2. **Sistema de Cafetería Escolar**\n" .
-                   "   → Control de ventas y menú digital\n" .
-                   "   → Chatbot con IA integrado\n\n" .
-                   "3. **Catálogo Diseños Especiales de Seguridad**\n" .
-                   "   → Diseño responsivo profesional\n" .
-                   "   → Sistema de filtros avanzado\n\n" .
-                   "4. **Sistemas Empresariales Personalizados**\n" .
-                   "   → CRM para gestión de clientes\n" .
-                   "   → Módulos de contratos y pagos\n\n" .
-                   "¿Quieres que desarrollemos algo similar para ti?";
-        }
-
-        // ========== SALUDOS ==========
-        if (preg_match('/^(hola|hello|hi|buenos dias|buenas tardes|buenas noches|hey)$/i', $lowerMessage)) {
-            return "¡Hola! 👋 Soy tu asistente de IA de **WebBridge Solutions**.\n\n" .
-                   "Puedo ayudarte con:\n\n" .
-                   "📦 Paquetes y precios\n" .
-                   "🚀 Servicios que ofrecemos\n" .
-                   "💼 Proyectos realizados\n" .
-                   "📞 Información de contacto\n" .
-                   "📊 Cotizaciones personalizadas\n" .
-                   "⏱️ Tiempos de desarrollo\n" .
-                   "💳 Formas de pago\n\n" .
-                   "**¿En qué puedo ayudarte hoy?**";
-        }
-
-        // ========== DESPEDIDAS ==========
-        if (preg_match('/(gracias|thank you|bye|adios|adiós|chao)/i', $lowerMessage)) {
-            return "¡De nada! 😊 Fue un placer ayudarte.\n\n" .
-                   "**Recuerda que estamos disponibles:**\n" .
-                   "📞 2761334864 (WhatsApp)\n" .
+        // ── DESPEDIDAS ─────────────────────────────────────────────────────
+        if (preg_match('/(gracias|bye|adios|hasta luego|chao|nos vemos)/i', $lowerMessage)) {
+            return "¡Fue un placer ayudarte! 😊\n\n" .
+                   "Recuerda que estamos aquí cuando lo necesites:\n\n" .
+                   "📞 2761334864\n" .
                    "📧 webbridgsolucions@gmail.com\n\n" .
-                   "**¡Que tengas un excelente día!** 🚀";
+                   "¡Mucho éxito en tu proyecto! 🚀✨";
         }
 
-        // ========== RESPUESTA GENÉRICA MEJORADA ==========
-        return "Hola! 👋 Soy el asistente de **WebBridge Solutions**.\n\n" .
-               "Te puedo ayudar con:\n\n" .
-               "🏢 **Sobre nosotros** - Quiénes somos\n" .
-               "📦 **Paquetes** - Desde \$4,000 MXN\n" .
-               "🚀 **Servicios** - Web, E-commerce, Sistemas\n" .
-               "💼 **Proyectos** - Trabajos realizados\n" .
-               "⏱️ **Tiempos** - Plazos de entrega\n" .
-               "💳 **Pagos** - Formas de pago\n" .
-               "📞 **Contacto** - 2761334864\n\n" .
-               "**¿Qué te gustaría saber específicamente?**";
+        // ── GENÉRICA ───────────────────────────────────────────────────────
+        return "¡Hola! 👋 Soy el asistente de **WebBridge Solutions**.\n\n" .
+               "Conectamos tu negocio con el mundo digital. Te puedo ayudar con:\n\n" .
+               "🏢 **Sobre nosotros** — quiénes somos\n" .
+               "📦 **Paquetes** — desde \$4,000 MXN\n" .
+               "🚀 **Servicios** — web, IA, AR, E-commerce\n" .
+               "🏪 **BridLux POS** — punto de venta propio\n" .
+               "💼 **Proyectos** — portafolio de trabajos\n" .
+               "⏱️ **Tiempos** — plazos de entrega\n" .
+               "💳 **Pagos** — formas de pago disponibles\n" .
+               "🛠️ **Soporte** — mantenimiento incluido\n" .
+               "📞 **Contacto** — 2761334864\n\n" .
+               "**¿Qué te gustaría saber?**";
     }
-
     private function removeAccents(string $string): string
     {
-        $string = str_replace(
+        return str_replace(
             ['á', 'é', 'í', 'ó', 'ú', 'ñ', 'Á', 'É', 'Í', 'Ó', 'Ú', 'Ñ'],
             ['a', 'e', 'i', 'o', 'u', 'n', 'A', 'E', 'I', 'O', 'U', 'N'],
             $string
         );
-        return $string;
     }
 
     private function getWebBridgeKnowledge(): string
     {
-        return "Eres un asistente de IA profesional y amigable para WebBridge Solutions, una empresa de desarrollo web en Puebla, México.
+        return "Eres un asistente profesional, amigable y experto de WebBridge Solutions, empresa mexicana de desarrollo web con sede en Puebla, México.
 
-INFORMACIÓN DE LA EMPRESA:
+═══════════════════════════════════════
+INFORMACIÓN DE LA EMPRESA
+═══════════════════════════════════════
 - Nombre: WebBridge Solutions
-- Ubicación: Puebla, México
+- Ubicación: Puebla, México (atendemos toda la República)
 - Teléfono/WhatsApp: 2761334864
 - Email: webbridgsolucions@gmail.com
-- Horario: Lunes a Viernes, 8:00 AM - 6:00 PM
+- Horario: Lun–Vie 8:00 AM – 6:00 PM
+- Facebook: /webbridgesolutions
+- Instagram: @webbridgesol
+- TikTok: @webbridgesolutions
+- Estadísticas: +50 proyectos entregados, +30 clientes, calificación 5★
 
-PAQUETES Y PRECIOS:
-1. WebStart Básico - \$4,000 MXN (5 secciones, dominio, hosting, SSL)
-2. WebPro Intermedio - \$5,500 MXN (8 secciones, admin panel, chatbot)
-3. WebCorp Empresarial - \$8,000 MXN (12 secciones, CRM, múltiples usuarios)
-4. WebElite Avanzado - \$10,000 MXN (ilimitado, IA, dashboard)
-5. WebShop E-Commerce - \$15,000 MXN (tienda completa)
+MISIÓN: Ser el puente que conecta las empresas con el mundo digital, proporcionando soluciones tecnológicas innovadoras, escalables y de alta calidad.
+VISIÓN: Ser la empresa líder en desarrollo web y soluciones digitales en México.
+VALORES: Excelencia · Innovación · Colaboración · Confianza
 
-TU ROL:
-- Sé amigable, profesional y servicial
-- Responde en español con emojis apropiados
-- Ofrece información clara
-- Invita a contactar directamente
-- Usa formato markdown";
+═══════════════════════════════════════
+PAQUETES Y PRECIOS (todos incluyen dominio + hosting 1 año)
+═══════════════════════════════════════
+1. WebStart Básico — \$4,000 MXN
+   - Diseño web básico y profesional
+   - Página de información empresarial
+   - Formulario de contacto por email
+   - Dominio personalizado (.com/.mx)
+   - Hosting básico por 1 año
+   - Diseño responsivo
+   - Optimización SEO básica
+   - Certificado SSL
+
+2. WebPro Intermedio — \$5,500 MXN
+   - Todo lo del paquete básico
+   - Diseño web personalizado
+   - Chatbot inteligente integrado con IA
+   - Sistema de gestión básico
+   - Panel de administración
+   - Galería de productos/servicios
+   - Integración con redes sociales
+   - Soporte técnico 6 meses
+
+3. WebCorp Empresarial — \$8,000 MXN
+   - Diseño web corporativo premium
+   - Múltiples páginas institucionales
+   - Blog corporativo integrado
+   - Formularios avanzados
+   - Google Analytics integrado
+   - SEO avanzado
+   - Backup automático semanal
+   - Soporte técnico 8 meses
+
+4. WebElite Avanzado — \$10,000 MXN (MÁS POPULAR ⭐)
+   - Diseño web avanzado y exclusivo
+   - Login/registro de usuarios
+   - Chatbot avanzado con IA
+   - Sistema de gestión completo
+   - Reportes automáticos
+   - Dashboard analítico
+   - Integración con APIs externas
+   - Soporte técnico 12 meses
+
+5. WebShop E-Commerce — \$15,000 MXN
+   - Todo lo del paquete Elite
+   - Catálogo ilimitado de productos
+   - Carrito de compras avanzado
+   - Pagos con Stripe / PayPal
+   - Inventario en tiempo real
+   - Sistema de cupones y descuentos
+   - Panel de estadísticas de ventas
+   - Soporte técnico 12 meses
+
+6. Recorridos Virtuales 3D — \$20,000 MXN
+   - Tours virtuales inmersivos
+   - Compatible con cualquier dispositivo
+   - Ideal para inmobiliarias, hoteles, restaurantes
+
+7. WebAR Vision 360 — \$25,000 MXN
+   - Realidad Aumentada web y móvil
+   - Visualización de productos en espacio real
+   - Experiencias inmersivas para clientes
+
+8. WebCustom — A medida (cotización personalizada)
+   - Desarrollo 100% personalizado
+   - Arquitectura a medida
+   - Integraciones especializadas
+   - Consultoría tecnológica incluida
+   - Capacitación del equipo
+   - Soporte premium dedicado
+
+═══════════════════════════════════════
+SERVICIOS
+═══════════════════════════════════════
+- Desarrollo web profesional 100% personalizado (SIN plantillas)
+- Diseño responsivo (móvil, tablet, escritorio)
+- Sistemas de gestión empresarial (CRM, ERP)
+- E-commerce completo con pagos seguros
+- Chatbots con Inteligencia Artificial
+- Implementación de IA: análisis predictivo, automatización, asistentes virtuales
+- Realidad Aumentada (AR) para cualquier industria
+- Recorridos Virtuales 3D
+- Analytics y reportes empresariales
+- Sistemas de correo profesional
+- BridLux POS — punto de venta propio híbrido
+
+═══════════════════════════════════════
+PRODUCTO PROPIO: BRIDLUX POS
+═══════════════════════════════════════
+Sistema de punto de venta híbrido (local + nube):
+- Funciona sin internet, crea su propio Wi-Fi
+- Control de inventario en tiempo real
+- Gestión de ventas, tickets y facturas
+- Dashboard analítico y reportes automáticos
+- Compatible con tablets, celulares y PC
+- Planes: Básico, Profesional, Empresarial
+- Ideal para tiendas, restaurantes, negocios físicos
+
+═══════════════════════════════════════
+PROYECTOS DESTACADOS
+═══════════════════════════════════════
+1. Platería Futura (En línea) — E-commerce joyería con Stripe, chatbot IA. Stack: CI4, PHP, MySQL, Stripe
+2. BUAP Cafetería (Privado) — Sistema gestión universitaria, chatbot pedidos, dashboard. Stack: CI4, PHP, MySQL, IA
+3. DIES Seguridad (Finalizado) — Catálogo digital cajas fuertes, chatbot. Stack: CI4, PHP, MySQL
+4. HP330 Spectral System (LIEE — Privado) — Software medidor iluminancia, gráficas CIE, Python. Stack: CI4, JS, MySQL, Python
+5. AgroData System (En desarrollo) — Agricultura de precisión, IA predictiva, API Conagua. Stack: CI4, JS, MySQL, IA
+6. BridLux POS (Producto propio) — POS híbrido local/nube para negocios físicos
+
+═══════════════════════════════════════
+TECNOLOGÍAS
+═══════════════════════════════════════
+Backend: PHP 8, CodeIgniter 4, MySQL/MariaDB, Python
+Frontend: HTML5, CSS3, JavaScript ES6+, React.js
+Pagos: Stripe, PayPal
+IA: Groq, GPT, APIs de IA
+3D/AR: WebGL, Three.js
+Otros: API REST, API Conagua, WebSockets
+
+═══════════════════════════════════════
+TIEMPOS DE DESARROLLO
+═══════════════════════════════════════
+- WebStart: 1–2 semanas
+- WebPro: 2–3 semanas
+- WebCorp: 3–4 semanas
+- WebElite: 4–6 semanas
+- WebShop: 5–7 semanas
+- Recorridos 3D: 4–6 semanas
+- AR Vision 360: 6–8 semanas
+- WebCustom: Según alcance
+
+═══════════════════════════════════════
+FORMAS DE PAGO
+═══════════════════════════════════════
+- Transferencia bancaria (SPEI)
+- Depósito bancario
+- Tarjeta de crédito/débito
+- PayPal
+- Esquema: 50% al inicio, 50% al finalizar
+- También disponibles planes de pago personalizados
+
+═══════════════════════════════════════
+INSTRUCCIONES DE COMPORTAMIENTO
+═══════════════════════════════════════
+- Sé amigable, profesional y entusiasta
+- Responde siempre en español usando emojis apropiados
+- Usa formato Markdown para claridad (negritas, listas)
+- Respuestas concisas pero completas — nunca demasiado largas
+- Siempre ofrece valor y guía al usuario hacia una solución
+- Para cotizaciones, solicita: nombre, email, teléfono y detalles del proyecto
+- Menciona BridLux cuando el cliente tenga negocio físico o necesite POS
+- Si preguntan por tecnología específica, sé honesto sobre lo que usamos
+- Siempre invita a contactar al 2761334864 o webbridgsolucions@gmail.com
+- No inventes precios ni plazos fuera de los indicados arriba";
     }
 }
