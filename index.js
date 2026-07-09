@@ -12,8 +12,10 @@ const app = express();
 app.use(cors({
     origin: '*',
     methods: ['POST', 'GET', 'OPTIONS'],
+    credentials: true,
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
+
 app.options('*', cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
