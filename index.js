@@ -300,16 +300,23 @@ app.post('/translate-bridge', async (req, res) => {
             body: JSON.stringify({
                 model: "llama-3.3-70b-versatile",
                 messages: [
-                    { role: "system", content: "Traduce este JSON a " + lang + ". Responde solo con JSON." },
+                    { role: "system", content: "Traduce este JSON a " + lang + ". Responde solo con un objeto JSON plano donde cada clave es el hash original y el valor es la traducción." },
                     { role: "user", content: JSON.stringify(texts) }
                 ]
             })
         });
 
         const data = await response.json();
-        res.json(data);
+        
+        // Extraemos la respuesta de Groq y la enviamos de vuelta al cliente
+        const content = data.choices[0].message.content;
+        const translations = JSON.parse(content.replace(/```json|```/g, ''));
+        
+        // El cliente espera { success: true, translations: { ... } }
+        res.json({ success: true, translations: translations });
+        
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ success: false, error: error.message });
     }
 });
 
