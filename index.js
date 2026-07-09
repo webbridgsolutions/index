@@ -290,22 +290,21 @@ app.post('/', async (req, res) => {
 
 app.post('/translate-bridge', async (req, res) => {
     const { texts, lang } = req.body;
-    const apiKey = process.env.GROQ_API_KEY;
+    
+    // Si no hay textos, no hagas nada
+    if (!texts || Object.keys(texts).length === 0) return res.json({ success: true, translations: {} });
 
     try {
         const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
             method: 'POST',
             headers: {
-                'Authorization': `Bearer ${apiKey}`,
+                'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({
                 model: "llama-3.1-8b-instant",
                 messages: [
-                    { 
-                      role: "system", 
-                      content: `Traduce este JSON a ${lang}. Responde SOLO con un objeto JSON válido donde las claves sean los hashes originales. No agregues texto adicional, ni bloques markdown, ni explicaciones.` 
-                    },
+                    { role: "system", content: "Traduce a " + lang + ". Solo devuelve JSON." },
                     { role: "user", content: JSON.stringify(texts) }
                 ]
             })
@@ -313,21 +312,20 @@ app.post('/translate-bridge', async (req, res) => {
 
         const data = await response.json();
         
-        // Verificación de seguridad: ¿Groq respondió bien?
-        if (!data.choices || !data.choices[0]) {
-            throw new Error("Respuesta inválida de Groq: " + JSON.stringify(data));
+        // Manejo de errores de Groq (si el límite de tokens se alcanza)
+        if (data.error) {
+            console.error("Error de Groq:", data.error.message);
+            return res.status(429).json({ error: "Límite superado, espera un poco" });
         }
 
-        const content = data.choices[0].message.content.trim();
-        // Limpiamos markdown por si acaso
-        const cleanContent = content.replace(/^```json\s*/, '').replace(/\s*```$/, '').trim();
-        const translations = JSON.parse(cleanContent);
+        const content = data.choices[0].message.content.replace(/```json|```/g, '').trim();
+        const translations = JSON.parse(content);
         
         res.json({ success: true, translations: translations });
         
     } catch (error) {
-        console.error("Error detallado en translate-bridge:", error);
-        res.status(500).json({ success: false, error: error.message });
+        console.error("Error en Render:", error.message);
+        res.status(500).json({ error: "Fallo interno en Render" });
     }
 });
 
