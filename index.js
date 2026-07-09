@@ -283,6 +283,37 @@ app.post('/', async (req, res) => {
 });
 
 // ==========================================
+// RUTA PARA LA TRADUCCION DE LA PAGINA
+// ==========================================
+
+app.post('/translate-bridge', async (req, res) => {
+    const { texts, lang } = req.body;
+    const apiKey = process.env.GROQ_API_KEY;
+
+    try {
+        const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${apiKey}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                model: "llama-3.3-70b-versatile",
+                messages: [
+                    { role: "system", content: "Traduce este JSON a " + lang + ". Responde solo con JSON." },
+                    { role: "user", content: JSON.stringify(texts) }
+                ]
+            })
+        });
+
+        const data = await response.json();
+        res.json(data);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ==========================================
 // 5. INICIALIZACIÓN DEL SERVIDOR
 // ==========================================
 const PORT = process.env.PORT || 10000;
