@@ -173,10 +173,16 @@ app.post('/send-quote', async (req, res) => {
 
     try {
         const transporter = nodemailer.createTransport({
-            service: 'gmail',
+            host: 'smtp.gmail.com',
+            port: 465,
+            secure: true, // Usar SSL
             auth: {
                 user: 'webbridgsolucions@gmail.com',
                 pass: process.env.EMAIL_PASSWORD 
+            },
+            tls: {
+                // No fallar si el certificado del servidor local tiene problemas
+                rejectUnauthorized: false
             }
         });
 
