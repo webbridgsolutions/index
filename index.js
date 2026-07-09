@@ -1,8 +1,25 @@
 const express = require('express');
+const nodemailer = require('nodemailer');
 const cors = require('cors');
 const fetch = require('node-fetch');
+
 const app = express();
 
+// ==========================================
+// 1. CONFIGURACIÓN GLOBAL (MIDDLEWARES)
+// ==========================================
+app.use(cors({
+    origin: '*',
+    methods: ['POST', 'GET', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+}));
+app.options('*', cors());
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// ==========================================
+// 2. PROMPT DEL SISTEMA PARA LA IA
+// ==========================================
 const systemPrompt = `
 Eres el asistente virtual EXCLUSIVO de WebBridge Solutions.
 Tu misión es convertir visitantes en clientes informados y motivarlos a iniciar su proyecto digital.
@@ -144,21 +161,57 @@ FORMAS DE PAGO
 TONO: Profesional, amigable y con la calidez poblana. 🇲🇽
 `;
 
-app.use(cors({
-    origin: '*',
-    methods: ['POST', 'GET', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
-}));
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-app.options('*', cors());
+// ==========================================
+// 3. RUTA PARA ENVIAR COTIZACIONES POR EMAIL
+// ==========================================
+app.post('/send-quote', async (req, res) => {
+    const { nombre, email, telefono, tipo, detalles } = req.body;
 
+    if (!nombre || !email) {
+        return res.status(400).json({ success: false, error: 'Nombre y email son obligatorios' });
+    }
+
+    try {
+        const transporter = nodemailer.createTransport({
+            service: 'gmail',
+            auth: {
+                user: 'webbridgsolucions@gmail.com',
+                pass: process.env.EMAIL_PASSWORD 
+            }
+        });
+
+        const mailOptions = {
+            from: '"WebBridge AI" <webbridgsolucions@gmail.com>',
+            to: 'webbridgsolucions@gmail.com', 
+            subject: `Nueva solicitud de ${tipo}: ${nombre}`,
+            html: `
+                <h2>Nueva solicitud de cotización</h2>
+                <p><strong>Nombre:</strong> ${nombre}</p>
+                <p><strong>Email:</strong> ${email}</p>
+                <p><strong>Teléfono:</strong> ${telefono || 'No proporcionado'}</p>
+                <p><strong>Tipo:</strong> ${tipo}</p>
+                <h3>Detalles del proyecto:</h3>
+                <p>${detalles}</p>
+            `
+        };
+
+        await transporter.sendMail(mailOptions);
+        res.json({ success: true, message: 'Cotización enviada correctamente' });
+
+    } catch (error) {
+        console.error('Error enviando correo:', error);
+        res.status(500).json({ success: false, error: 'Error interno del servidor al enviar correo' });
+    }
+});
+
+// ==========================================
+// 4. RUTA PRINCIPAL (CHATBOT IA CON GROQ)
+// ==========================================
 app.post('/', async (req, res) => {
     const { message, history } = req.body;
     const apiKey = process.env.GROQ_API_KEY;
 
     try {
-        // Limpieza profunda del historial para evitar errores 400 de Groq
         let rawHistory = typeof history === 'string' ? JSON.parse(history) : (history || []);
         let parsedHistory = rawHistory.filter(msg => msg.content && msg.content.trim() !== "");
 
@@ -193,5 +246,8 @@ app.post('/', async (req, res) => {
     }
 });
 
+// ==========================================
+// 5. INICIALIZACIÓN DEL SERVIDOR
+// ==========================================
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`Servidor Groq WebBridge listo en puerto ${PORT}`));
