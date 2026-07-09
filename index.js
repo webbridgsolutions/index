@@ -290,10 +290,6 @@ app.post('/', async (req, res) => {
 
 app.post('/translate-bridge', async (req, res) => {
     const { texts, lang } = req.body;
-    
-    // Si no hay textos, no hagas nada
-    if (!texts || Object.keys(texts).length === 0) return res.json({ success: true, translations: {} });
-
     try {
         const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
             method: 'POST',
@@ -304,28 +300,27 @@ app.post('/translate-bridge', async (req, res) => {
             body: JSON.stringify({
                 model: "llama-3.1-8b-instant",
                 messages: [
-                    { role: "system", content: "Traduce a " + lang + ". Solo devuelve JSON." },
-                    { role: "user", content: JSON.stringify(texts) }
+                    { role: "system", content: "Responde ÚNICAMENTE con un objeto JSON. No escribas nada más." },
+                    { role: "user", content: "Traduce a " + lang + ": " + JSON.stringify(texts) }
                 ]
             })
         });
 
         const data = await response.json();
-        
-        // Manejo de errores de Groq (si el límite de tokens se alcanza)
-        if (data.error) {
-            console.error("Error de Groq:", data.error.message);
-            return res.status(429).json({ error: "Límite superado, espera un poco" });
-        }
+        let content = data.choices[0].message.content.trim();
 
-        const content = data.choices[0].message.content.replace(/```json|```/g, '').trim();
-        const translations = JSON.parse(content);
+        // --- LA SOLUCIÓN AL ERROR DE JSON ---
+        // Buscamos dónde empieza el JSON y dónde termina, ignorando todo el texto previo
+        const start = content.indexOf('{');
+        const end = content.lastIndexOf('}') + 1;
+        const jsonString = content.substring(start, end);
         
+        const translations = JSON.parse(jsonString);
         res.json({ success: true, translations: translations });
         
     } catch (error) {
-        console.error("Error en Render:", error.message);
-        res.status(500).json({ error: "Fallo interno en Render" });
+        console.error("Error crítico:", error);
+        res.status(500).json({ error: "Fallo de procesamiento" });
     }
 });
 
