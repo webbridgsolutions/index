@@ -174,20 +174,65 @@ app.post('/send-quote', async (req, res) => {
 
     try {
         const data = await resend.emails.send({
-            from: 'WebBridge Solutions <onboarding@resend.dev>', // O tu dominio verificado
-            to: 'webbridgsolucions@gmail.com',
-            subject: `Nueva solicitud de ${tipo}: ${nombre}`,
-            html: `
-                <h2>Nueva solicitud de cotización</h2>
-                <p><strong>Nombre:</strong> ${nombre}</p>
-                <p><strong>Email:</strong> ${email}</p>
-                <p><strong>Teléfono:</strong> ${telefono || 'No proporcionado'}</p>
-                <p><strong>Tipo:</strong> ${tipo}</p>
-                <h3>Detalles del proyecto:</h3>
-                <p>${detalles}</p>
-            `
-        });
+    from: 'WebBridge Solutions <onboarding@resend.dev>',
+    to: 'webbridgsolucions@gmail.com',
+    subject: `Nueva solicitud de ${tipo}: ${nombre}`,
+    html: `
+    <html>
+    <head>
+        <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+            .header { background: linear-gradient(135deg, #0f2a5e 0%, #1e3a8a 55%, #2d4fad 100%); color: white; padding: 20px; border-radius: 8px 8px 0 0; text-align: center; }
+            .content { background: #f9fafb; padding: 30px; border-radius: 0 0 8px 8px; }
+            .field { margin-bottom: 15px; padding: 10px; background: white; border-radius: 5px; }
+            .field strong { color: #0f2a5e; }
+            .footer { text-align: center; margin-top: 20px; color: #6b7280; font-size: 12px; }
+        </style>
+    </head>
+    <body>
+        <div class='container'>
+            <div class='header'>
+                <h2>🤖 Nueva Solicitud desde WebBridge AI</h2>
+            </div>
+            <div class='content'>
+                <p>Has recibido una nueva solicitud de <strong>${tipo}</strong> a través del chatbot:</p>
 
+                <div class='field'>
+                    <strong>👤 Nombre:</strong><br>
+                    ${nombre}
+                </div>
+
+                <div class='field'>
+                    <strong>📧 Email:</strong><br>
+                    <a href='mailto:${email}'>${email}</a>
+                </div>
+
+                <div class='field'>
+                    <strong>📞 Teléfono:</strong><br>
+                    ${telefono || 'No proporcionado'}
+                </div>
+
+                <div class='field'>
+                    <strong>📝 Tipo de Solicitud:</strong><br>
+                    ${tipo}
+                </div>
+
+                <div class='field'>
+                    <strong>💬 Detalles:</strong><br>
+                    ${detalles}
+                </div>
+
+                <div class='footer'>
+                    <p>Este mensaje fue generado automáticamente por WebBridge AI Chatbot</p>
+                    <p>📅 ${new Date().toLocaleString('es-MX')}</p>
+                </div>
+            </div>
+        </div>
+    </body>
+    </html>
+    `
+});
         res.json({ success: true, message: 'Cotización enviada con Resend', data });
     } catch (error) {
         console.error('Error enviando con Resend:', error);
