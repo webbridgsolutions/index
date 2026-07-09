@@ -1,5 +1,6 @@
 const express = require('express');
-const nodemailer = require('nodemailer');
+const { Resend } = require('resend');
+const resend = new Resend(process.env.RESEND_API_KEY);
 const cors = require('cors');
 const fetch = require('node-fetch');
 
@@ -168,27 +169,13 @@ app.post('/send-quote', async (req, res) => {
     const { nombre, email, telefono, tipo, detalles } = req.body;
 
     if (!nombre || !email) {
-        return res.status(400).json({ success: false, error: 'Nombre y email son obligatorios' });
+        return res.status(400).json({ success: false, error: 'Datos incompletos' });
     }
 
     try {
-        const transporter = nodemailer.createTransport({
-            host: 'smtp.gmail.com',
-            port: 465,
-            secure: true, // Usar SSL
-            auth: {
-                user: 'webbridgsolucions@gmail.com',
-                pass: process.env.EMAIL_PASSWORD 
-            },
-            tls: {
-                // No fallar si el certificado del servidor local tiene problemas
-                rejectUnauthorized: false
-            }
-        });
-
-        const mailOptions = {
-            from: '"WebBridge AI" <webbridgsolucions@gmail.com>',
-            to: 'webbridgsolucions@gmail.com', 
+        const data = await resend.emails.send({
+            from: 'WebBridge Solutions <onboarding@resend.dev>', // O tu dominio verificado
+            to: 'webbridgsolucions@gmail.com',
             subject: `Nueva solicitud de ${tipo}: ${nombre}`,
             html: `
                 <h2>Nueva solicitud de cotización</h2>
@@ -199,14 +186,12 @@ app.post('/send-quote', async (req, res) => {
                 <h3>Detalles del proyecto:</h3>
                 <p>${detalles}</p>
             `
-        };
+        });
 
-        await transporter.sendMail(mailOptions);
-        res.json({ success: true, message: 'Cotización enviada correctamente' });
-
+        res.json({ success: true, message: 'Cotización enviada con Resend', data });
     } catch (error) {
-        console.error('Error enviando correo:', error);
-        res.status(500).json({ success: false, error: 'Error interno del servidor al enviar correo' });
+        console.error('Error enviando con Resend:', error);
+        res.status(500).json({ success: false, error: error.message });
     }
 });
 
