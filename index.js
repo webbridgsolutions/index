@@ -302,7 +302,10 @@ app.post('/translate-bridge', async (req, res) => {
             body: JSON.stringify({
                 model: "llama-3.3-70b-versatile",
                 messages: [
-                    { role: "system", content: `Traduce este JSON a ${lang}. Responde SOLO con un objeto JSON plano donde cada clave es el hash original y el valor es la traducción.` },
+                    { 
+                      role: "system", 
+                      content: `Traduce este JSON a ${lang}. Responde SOLO con un objeto JSON válido donde las claves sean los hashes originales. No agregues texto adicional, ni bloques markdown, ni explicaciones.` 
+                    },
                     { role: "user", content: JSON.stringify(texts) }
                 ]
             })
@@ -310,15 +313,20 @@ app.post('/translate-bridge', async (req, res) => {
 
         const data = await response.json();
         
-        // Extraer y limpiar respuesta de Groq
-        const content = data.choices[0].message.content.replace(/```json|```/g, '').trim();
-        const translations = JSON.parse(content);
+        // Verificación de seguridad: ¿Groq respondió bien?
+        if (!data.choices || !data.choices[0]) {
+            throw new Error("Respuesta inválida de Groq: " + JSON.stringify(data));
+        }
+
+        const content = data.choices[0].message.content.trim();
+        // Limpiamos markdown por si acaso
+        const cleanContent = content.replace(/^```json\s*/, '').replace(/\s*```$/, '').trim();
+        const translations = JSON.parse(cleanContent);
         
-        // Respuesta que espera tu auto-translate.js
         res.json({ success: true, translations: translations });
         
     } catch (error) {
-        console.error("Error en puente de traducción:", error);
+        console.error("Error detallado en translate-bridge:", error);
         res.status(500).json({ success: false, error: error.message });
     }
 });
