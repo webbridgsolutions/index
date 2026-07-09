@@ -289,7 +289,11 @@ app.post('/', async (req, res) => {
 // ==========================================
 
 app.post('/translate-bridge', async (req, res) => {
-    const { texts, lang } = req.body;
+    // 1. Validar datos mínimos
+    if (!req.body.texts || Object.keys(req.body.texts).length === 0) {
+        return res.status(400).json({ error: "Sin textos" });
+    }
+
     try {
         const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
             method: 'POST',
@@ -300,27 +304,23 @@ app.post('/translate-bridge', async (req, res) => {
             body: JSON.stringify({
                 model: "llama-3.1-8b-instant",
                 messages: [
-                    { role: "system", content: "Responde ÚNICAMENTE con un objeto JSON. No escribas nada más." },
-                    { role: "user", content: "Traduce a " + lang + ": " + JSON.stringify(texts) }
+                    { role: "system", content: "Responde solo con JSON válido." },
+                    { role: "user", content: "Traduce a " + req.body.lang + ": " + JSON.stringify(req.body.texts) }
                 ]
             })
         });
 
         const data = await response.json();
-        let content = data.choices[0].message.content.trim();
-
-        // --- LA SOLUCIÓN AL ERROR DE JSON ---
-        // Buscamos dónde empieza el JSON y dónde termina, ignorando todo el texto previo
-        const start = content.indexOf('{');
-        const end = content.lastIndexOf('}') + 1;
-        const jsonString = content.substring(start, end);
         
-        const translations = JSON.parse(jsonString);
-        res.json({ success: true, translations: translations });
+        // Si hay error de Groq, responder 429 para que el navegador PARE
+        if (data.error) return res.status(429).json({ error: "Límite" });
+
+        const content = data.choices[0].message.content.replace(/```json|```/g, '').trim();
+        res.json({ success: true, translations: JSON.parse(content) });
         
     } catch (error) {
-        console.error("Error crítico:", error);
-        res.status(500).json({ error: "Fallo de procesamiento" });
+        // Enviar error 500 para que el JS sepa que debe detenerse
+        res.status(500).json({ error: "Error interno" });
     }
 });
 
